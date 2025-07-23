@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # MinIO Cluster with 3 nodes for AIStor
+  minio1:
+    image: minio/minio:latest
+    hostname: minio1
+    volumes:
+      - minio1-data:/data1
+      - minio1-data2:/data2
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_SERVER_URL: http://localhost:9000
+    command: server --console-address ":9001" http://minio{1...3}/data{1...2}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+
+  minio2:
+    image: minio/minio:latest
+    hostname: minio2
+    volumes:
+      - minio2-data:/data1
+      - minio2-data2:/data2
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server --console-address ":9001" http://minio{1...3}/data{1...2}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+
+  minio3:
+    image: minio/minio:latest
+    hostname: minio3
+    volumes:
+      - minio3-data:/data1
+      - minio3-data2:/data2
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server --console-address ":9001" http://minio{1...3}/data{1...2}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+
+  # LakeFS for versioning
+  lakefs:
+    image: treeverse/lakefs:1.22.0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - lakefs-postgres
+      - minio1
+    environment:
+      - LAKEFS_AUTH_ENCRYPT_SECRET_KEY=some-secret-key
+      - LAKEFS_DATABASE_TYPE=postgres
+      - LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING=postgres://lakefs:lakefs@lakefs-postgres/postgres?sslmode=disable
+      - LAKEFS_BLOCKSTORE_TYPE=s3
+      - LAKEFS_BLOCKSTORE_S3_ENDPOINT=http://minio1:9000
+      - LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE=true
+      - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID=minioadmin
+      - LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY=minioadmin123
+      - LAKEFS_LOGGING_LEVEL=INFO
+    networks:
+      - minio-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/config"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # PostgreSQL for LakeFS metadata
+  lakefs-postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: lakefs
+      POSTGRES_PASSWORD: lakefs
+      POSTGRES_DB: postgres
+    volumes:
+      - lakefs-postgres-data:/var/lib/postgresql/data
+    networks:
+      - minio-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakefs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Load balancer for MinIO cluster
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "9090:9090"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - minio1
+      - minio2
+      - minio3
+    networks:
+      - minio-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Grafana for monitoring
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - minio-network
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - minio-network
+
+volumes:
+  minio1-data:
+  minio1-data2:
+  minio2-data:
+  minio2-data2:
+  minio3-data:
+  minio3-data2:
+  lakefs-postgres-data:
+  grafana-data:
+  prometheus-data:
+
+networks:
+  minio-network:
+    driver: bridge

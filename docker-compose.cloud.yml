@@ -1,0 +1,240 @@
+version: '3.8'
+
+services:
+  # Load balancer for MinIO cluster
+  nginx:
+    image: nginx:alpine
+    container_name: minio-lb
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx-cloud.conf:/etc/nginx/nginx.conf:ro
+      - nginx-certs:/etc/nginx/certs
+    depends_on:
+      - minio1
+      - minio2
+      - minio3
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  # MinIO Cluster - 3 nodes
+  minio1:
+    image: minio/minio:latest
+    hostname: minio1
+    container_name: minio1
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_DISTRIBUTED_MODE_ENABLED: "yes"
+      MINIO_DISTRIBUTED_NODES: "minio1,minio2,minio3"
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+    volumes:
+      - minio1-data:/data
+      - ./scripts:/scripts
+    command: server http://minio{1...3}/data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  minio2:
+    image: minio/minio:latest
+    hostname: minio2
+    container_name: minio2
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_DISTRIBUTED_MODE_ENABLED: "yes"
+      MINIO_DISTRIBUTED_NODES: "minio1,minio2,minio3"
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+    volumes:
+      - minio2-data:/data
+      - ./scripts:/scripts
+    command: server http://minio{1...3}/data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  minio3:
+    image: minio/minio:latest
+    hostname: minio3
+    container_name: minio3
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_DISTRIBUTED_MODE_ENABLED: "yes"
+      MINIO_DISTRIBUTED_NODES: "minio1,minio2,minio3"
+      MINIO_PROMETHEUS_AUTH_TYPE: "public"
+    volumes:
+      - minio3-data:/data
+      - ./scripts:/scripts
+    command: server http://minio{1...3}/data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  # LakeFS for data versioning
+  lakefs:
+    image: treeverse/lakefs:latest
+    container_name: lakefs
+    ports:
+      - "8000:8000"
+    environment:
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: ${LAKEFS_SECRET_KEY:-some-secret-key-for-encryption-change-me}
+      LAKEFS_DATABASE_TYPE: "local"
+      LAKEFS_BLOCKSTORE_TYPE: "s3"
+      LAKEFS_BLOCKSTORE_S3_ENDPOINT: "http://nginx"
+      LAKEFS_BLOCKSTORE_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      LAKEFS_BLOCKSTORE_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      LAKEFS_BLOCKSTORE_S3_REGION: "us-east-1"
+      LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE: "true"
+      LAKEFS_LOGGING_LEVEL: "INFO"
+      LAKEFS_STATS_ENABLED: "false"
+      LAKEFS_INSTALLATION_USER_NAME: ${LAKEFS_USER:-admin}
+      LAKEFS_INSTALLATION_ACCESS_KEY_ID: ${LAKEFS_ACCESS_KEY:-AKIAIOSFOLKFSSAMPLES}
+      LAKEFS_INSTALLATION_SECRET_ACCESS_KEY: ${LAKEFS_SECRET_ACCESS_KEY:-wJalrXUtnFEMI/K7MDENG/bPxRfiCYSAMPLEKEY}
+    volumes:
+      - lakefs-data:/lakefs/data
+    depends_on:
+      - nginx
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  # AIStor - optimizes small file performance
+  aistor:
+    build:
+      context: ./aistor
+      dockerfile: Dockerfile
+    container_name: aistor-sidecar
+    volumes:
+      - ./aistor:/app
+      - aistor-cache:/cache
+    environment:
+      MINIO_ENDPOINTS: "nginx:80"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      CACHE_SIZE: ${AISTOR_CACHE_SIZE:-2GB}
+      SMALL_FILE_THRESHOLD: ${AISTOR_THRESHOLD:-1MB}
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      - nginx
+      - redis
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  # Redis for AIStor caching
+  redis:
+    image: redis:7-alpine
+    container_name: redis-cache
+    volumes:
+      - redis-data:/data
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  # MinIO client for setup and operations  
+  mc-setup:
+    image: minio/mc:latest
+    container_name: mc-setup
+    volumes:
+      - ./scripts:/scripts
+      - ./data:/data
+    entrypoint: |
+      sh -c "
+        echo '⚙️  Setting up MinIO cluster...'
+        sleep 30
+        
+        # Configure MinIO client
+        mc alias set minio http://nginx minioadmin minioadmin123
+        
+        # Run setup script
+        if [ -f /scripts/setup-buckets.sh ]; then
+          chmod +x /scripts/setup-buckets.sh
+          /scripts/setup-buckets.sh
+        fi
+        
+        echo '✅ MinIO cluster setup complete!'
+        
+        # Keep container running for manual operations
+        tail -f /dev/null
+      "
+    depends_on:
+      - nginx
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  # Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+  # Grafana for visualizations
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASS:-admin123}
+      GF_INSTALL_PLUGINS: "grafana-piechart-panel"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - minio-network
+    restart: unless-stopped
+
+volumes:
+  minio1-data:
+  minio2-data:
+  minio3-data:
+  lakefs-data:
+  aistor-cache:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+  nginx-certs:
+
+networks:
+  minio-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

@@ -1,0 +1,58 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "alert_rules.yml"
+
+scrape_configs:
+  # MinIO metrics
+  - job_name: 'minio-cluster'
+    static_configs:
+      - targets: 
+        - 'minio1:9000'
+        - 'minio2:9000' 
+        - 'minio3:9000'
+    metrics_path: /minio/v2/metrics/cluster
+    scrape_interval: 30s
+    
+  - job_name: 'minio-node'
+    static_configs:
+      - targets:
+        - 'minio1:9000'
+        - 'minio2:9000'
+        - 'minio3:9000'
+    metrics_path: /minio/v2/metrics/node
+    scrape_interval: 30s
+
+  # LakeFS metrics
+  - job_name: 'lakefs'
+    static_configs:
+      - targets: ['lakefs:8000']
+    metrics_path: /api/v1/metrics
+    scrape_interval: 30s
+
+  # AIStor custom metrics
+  - job_name: 'aistor'
+    static_configs:
+      - targets: ['aistor:8080']
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  # Redis metrics
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    scrape_interval: 30s
+
+  # Nginx metrics (if nginx-prometheus-exporter is added)
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:9113']
+    scrape_interval: 30s
+
+  # Node exporter (if added for system metrics)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s

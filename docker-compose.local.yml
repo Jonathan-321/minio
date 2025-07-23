@@ -1,0 +1,186 @@
+version: '3.8'
+
+services:
+  # MinIO Cluster - 3 nodes
+  minio1:
+    image: minio/minio:latest
+    hostname: minio1
+    container_name: minio1
+    ports:
+      - "9001:9000"
+      - "9091:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_DISTRIBUTED_MODE_ENABLED: "yes"
+      MINIO_DISTRIBUTED_NODES: "minio1,minio2,minio3"
+    volumes:
+      - minio1-data:/data
+      - ./scripts:/scripts
+    command: server http://minio{1...3}/data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+
+  minio2:
+    image: minio/minio:latest
+    hostname: minio2
+    container_name: minio2
+    ports:
+      - "9002:9000"
+      - "9092:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_DISTRIBUTED_MODE_ENABLED: "yes"
+      MINIO_DISTRIBUTED_NODES: "minio1,minio2,minio3"
+    volumes:
+      - minio2-data:/data
+      - ./scripts:/scripts
+    command: server http://minio{1...3}/data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+
+  minio3:
+    image: minio/minio:latest
+    hostname: minio3
+    container_name: minio3
+    ports:
+      - "9003:9000"
+      - "9093:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_DISTRIBUTED_MODE_ENABLED: "yes"
+      MINIO_DISTRIBUTED_NODES: "minio1,minio2,minio3"
+    volumes:
+      - minio3-data:/data
+      - ./scripts:/scripts
+    command: server http://minio{1...3}/data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - minio-network
+
+  # LakeFS for data versioning
+  lakefs:
+    image: treeverse/lakefs:latest
+    container_name: lakefs
+    ports:
+      - "8000:8000"
+    environment:
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "some-secret-key-for-encryption"
+      LAKEFS_DATABASE_TYPE: "local"
+      LAKEFS_BLOCKSTORE_TYPE: "s3"
+      LAKEFS_BLOCKSTORE_S3_ENDPOINT: "http://minio1:9000"
+      LAKEFS_BLOCKSTORE_S3_ACCESS_KEY_ID: "minioadmin"
+      LAKEFS_BLOCKSTORE_S3_SECRET_ACCESS_KEY: "minioadmin123"
+      LAKEFS_BLOCKSTORE_S3_REGION: "us-east-1"
+      LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE: "true"
+      LAKEFS_LOGGING_LEVEL: "INFO"
+    volumes:
+      - lakefs-data:/lakefs/data
+    depends_on:
+      - minio1
+      - minio2
+      - minio3
+    networks:
+      - minio-network
+
+  # AIStor placeholder - optimizes small file performance
+  aistor:
+    image: alpine:latest
+    container_name: aistor-sidecar
+    volumes:
+      - ./aistor:/app
+      - aistor-cache:/cache
+    environment:
+      MINIO_ENDPOINTS: "minio1:9000,minio2:9000,minio3:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin123"
+      CACHE_SIZE: "1GB"
+      SMALL_FILE_THRESHOLD: "1MB"
+    command: |
+      sh -c "
+        echo '🤖 AIStor Sidecar Starting...'
+        echo 'Optimizing small file performance for robotics data'
+        echo 'Cache location: /cache'
+        echo 'Small file threshold: 1MB'
+        echo 'MinIO endpoints: minio1:9000,minio2:9000,minio3:9000'
+        
+        # Create cache structure
+        mkdir -p /cache/small-files /cache/metadata /cache/temp
+        
+        # Placeholder optimization service
+        while true; do
+          echo '[AIStor] Monitoring small file operations...'
+          sleep 60
+        done
+      "
+    depends_on:
+      - minio1
+    networks:
+      - minio-network
+
+  # MinIO client for setup and operations
+  mc-setup:
+    image: minio/mc:latest
+    container_name: mc-setup
+    volumes:
+      - ./scripts:/scripts
+      - ./data:/data
+    entrypoint: |
+      sh -c "
+        echo '⚙️  Setting up MinIO cluster...'
+        sleep 10
+        
+        # Configure MinIO client
+        mc alias set minio1 http://minio1:9000 minioadmin minioadmin123
+        mc alias set minio2 http://minio2:9000 minioadmin minioadmin123  
+        mc alias set minio3 http://minio3:9000 minioadmin minioadmin123
+        
+        # Create buckets for UMI data
+        mc mb minio1/umi-raw --ignore-existing
+        mc mb minio1/umi-processed --ignore-existing
+        mc mb minio1/umi-experiments --ignore-existing
+        mc mb minio1/lakefs-storage --ignore-existing
+        
+        # Set bucket policies for public read access (development only)
+        mc policy set public minio1/umi-raw
+        mc policy set public minio1/umi-processed
+        mc policy set public minio1/umi-experiments
+        
+        echo '✅ MinIO cluster setup complete!'
+        
+        # Keep container running for manual operations
+        tail -f /dev/null
+      "
+    depends_on:
+      - minio1
+      - minio2
+      - minio3
+    networks:
+      - minio-network
+
+volumes:
+  minio1-data:
+  minio2-data:
+  minio3-data:
+  lakefs-data:
+  aistor-cache:
+
+networks:
+  minio-network:
+    driver: bridge
